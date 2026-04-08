@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     task::{Context, Poll, ready},
 };
 
-use alloy_primitives::BlockNumber;
+use alloy_consensus::Transaction;
+use alloy_primitives::{Address, BlockNumber};
 use futures_util::{FutureExt, TryStreamExt};
 use reth::{
     api::{BlockBody, FullNodeComponents},
@@ -17,18 +19,15 @@ use reth_tracing::tracing::info;
 
 struct MyExEx<Node: FullNodeComponents> {
     ctx: ExExContext<Node>,
-    /// First block that was committed since the start of the ExEx.
-    first_block: Option<BlockNumber>,
-    /// Total number of transactions committed.
-    transactions: u64,
+    /// Block gas transaction by To address
+    gas_consumed_by_address: HashMap<Address, u64>,
 }
 
 impl<Node: FullNodeComponents> MyExEx<Node> {
     fn new(ctx: ExExContext<Node>) -> Self {
         Self {
             ctx,
-            first_block: None,
-            transactions: 0,
+            gas_consumed_by_address: HashMap::new(),
         }
     }
 }
@@ -43,30 +42,51 @@ impl<Node: FullNodeComponents<Types: NodeTypes<Primitives = EthPrimitives>>> Fut
 
         while let Some(notification) = ready!(this.ctx.notifications.try_next().poll_unpin(cx))? {
             if let Some(reverted_chain) = notification.reverted_chain() {
-                this.transactions = this.transactions.saturating_sub(
-                    reverted_chain
-                        .blocks_iter()
-                        .map(|b| b.body().transaction_count() as u64)
-                        .sum(),
-                );
+                reverted_chain.blocks_iter().for_each(|b| {
+                    b.body().transactions().for_each(|t| {
+                        let tx = t.as_eip4844();
+
+                        let Some(eip4844) = tx else {
+                            return;
+                        };
+
+                        let blob_gas_consumed = eip4844.blob_gas_used().unwrap_or_default();
+                        let destination = eip4844.to().unwrap_or_default();
+
+                        *this
+                            .gas_consumed_by_address
+                            .entry(destination)
+                            .or_insert(blob_gas_consumed) -= blob_gas_consumed;
+                    })
+                });
+
+                this.ctx
+                    .events
+                    .send(ExExEvent::FinishedHeight(reverted_chain.tip().num_hash()))?;
             }
 
             if let Some(committed_chain) = notification.committed_chain() {
-                this.first_block
-                    .get_or_insert(committed_chain.first().number);
+                committed_chain.blocks_iter().for_each(|b| {
+                    b.body().transactions().for_each(|t| {
+                        let tx = t.as_eip4844();
 
-                this.transactions += committed_chain
-                    .blocks_iter()
-                    .map(|b| b.body().transaction_count() as u64)
-                    .sum::<u64>();
+                        let Some(eip4844) = tx else {
+                            return;
+                        };
+
+                        let blob_gas_consumed = eip4844.blob_gas_used().unwrap_or_default();
+                        let destination = eip4844.to().unwrap_or_default();
+
+                        *this
+                            .gas_consumed_by_address
+                            .entry(destination)
+                            .or_insert(blob_gas_consumed) += blob_gas_consumed;
+                    })
+                });
 
                 this.ctx
                     .events
                     .send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
-            }
-
-            if let Some(first_block) = this.first_block {
-                info!(%first_block, transactions = %this.transactions, "Total number of transactions");
             }
         }
 
@@ -85,4 +105,3 @@ fn main() -> eyre::Result<()> {
         handle.wait_for_node_exit().await
     })
 }
-
