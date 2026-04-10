@@ -1588,6 +1588,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie",
  "reth-trie-common",
+ "rocksdb",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",

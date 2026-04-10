@@ -79,6 +79,8 @@ rand = "0.9"
 reth-exex-test-utils = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.1" }
 reth-testing-utils = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.1" }
 
+# rocksdb
+rocksdb = { version = "0.24" }
 
 #[patch.crates-io]
 #revm-inspectors = { git = "https://github.com/paradigmxyz/revm-inspectors", rev = "667180b" }
